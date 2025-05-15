@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from email.policy import default
 from openai import OpenAI
@@ -15,8 +16,6 @@ from jinja2 import Template
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from src.generator import generate
-    from src.client import create_client
     import config.setting as cfg
 except ImportError:
     print("无法导入项目模块，请确保您在项目根目录下运行此脚本")
@@ -24,7 +23,7 @@ except ImportError:
 
 
 class PromptOptimizer:
-    def __init__(self,base_url, api_key, model="gpt-4", temperature=0, max_tokens=4096):
+    def __init__(self,base_url, api_key, model="gpt-4", temperature=0, max_tokens=4096, enable_thinking=False):
         """Initialize the prompt optimizer"""
         self.client = OpenAI(base_url=base_url, api_key=api_key)
 
@@ -33,6 +32,7 @@ class PromptOptimizer:
         self.max_tokens = max_tokens
         self.misclassified_examples = []
         self.current_prompt = ""
+        self.enable_thinking = enable_thinking
 
     def load_data(self, csv_path):
         """Load and parse the CSV data"""
@@ -65,21 +65,27 @@ class PromptOptimizer:
             template = Template(self.current_prompt)
             formatted_prompt = template.render(request=request, response=response)
 
+            if not self.enable_thinking:
+                formatted_prompt += r"\n /no_think"
+
             # Call the LLM API
             try:
                 completion = self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "system", "content": formatted_prompt}],
                     temperature=self.temperature,
-                    max_tokens=self.max_tokens
+                    max_tokens=self.max_tokens,
+                    #extra_body={"chat_template_kwargs": {"enable_thinking": False}} if not self.enable_thinking else None,
                 )
 
                 llm_output = completion.choices[0].message.content
 
+                cleaned_string = cleaned_text = re.sub(r'<think>[\s\S]*?</think>\s*', '', llm_output).strip()
+                paserd_json = json.loads(cleaned_string)
                 # Extract the classification from the output
-                if "SUCCESS" in llm_output:
+                if "SUCCESS" in paserd_json["label"]:
                     prediction = "SUCCESS"
-                elif "FAILURE" in llm_output:
+                elif "FAILURE" in  paserd_json["label"]:
                     prediction = "FAILURE"
                 else:
                     prediction = "UNKNOWN"
@@ -166,11 +172,11 @@ class PromptOptimizer:
         """
 
         try:
-            completion = openai.chat.completions.create(
+            completion = self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": improvement_prompt}],
                 temperature=0.7,
-                max_tokens=1500
+                max_tokens=self.max_tokens
             )
 
             return completion.choices[0].message.content
@@ -308,14 +314,14 @@ def optimize_prompts(data_file, initial_prompt_path, model, base_url, api_key, t
         misclassified = optimizer.get_misclassified()
         print(f"Found {len(misclassified)} misclassified examples")
 
-        save_with_timestamp(metrics, str(metrics["accuracy"]), extension="txt")
-        save_with_timestamp(metrics, str(metrics["accuracy"]), extension="json")
+        save_with_timestamp(metrics, str(metrics["accuracy"]), directory=output_dir, extension="txt")
+        save_with_timestamp(metrics, str(metrics["accuracy"]), directory=output_dir, extension="json")
 
     else:
         # Run iterative optimization (optional)
         results = optimizer.iterative_optimization(iterations=optimization_iterations)
-        save_with_timestamp(results, "prompt", extension="txt")
-        save_with_timestamp(results, "prompt", extension="json")
+        save_with_timestamp(results, "prompt", directory=output_dir, extension="txt")
+        save_with_timestamp(results, "prompt", directory=output_dir, extension="json")
 
 # Example usage
 if __name__ == "__main__":
