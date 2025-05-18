@@ -170,11 +170,14 @@ Reason: Direct-output attack; empty response where output expected.
 
 ### **Analyze the following HTTP traffic exchange:**
 req:  
+```
 {{req}}
+```
 
 rsp:  
+```
 {{rsp}}
-
+```
 ---
 
 **Key Changes Recap:**

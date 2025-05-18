@@ -104,10 +104,14 @@ Please strictly follow the review process below:
 ### **Traffic to Review**
 
 **Request:**  
+<req>
 {{req}}
+</req>
 
 **Response:**  
+<req>
 {{rsp}}
+<req>
 
 **Analyst Output:**  
 {{llm_output}}

