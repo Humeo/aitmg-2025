@@ -51,6 +51,15 @@ API_KEY = "fake-key"
 DEFAULT_MODEL = "qwen3:8b"
 AVAILABLE_MODELS = ["qwen7b", "deepseek-r1-distill-qwen7b", "secgpt7b", "qwen3-8b"]
 
+# ADVANCED_MODEL = "gemini-2.5-pro-preview-03-25"
+# ADVANCED_BASE_URL = "https://yunwu.ai/v1"
+# ADVANCED_MODEL_API = "sk-wMRk3xvAGOkLhZ7WQhezrv9JYyukspkMjRLFWpLzDwxfiAhF"
+
+ADVANCED_MODEL = "gpt-4.1"
+ADVANCED_BASE_URL = "https://yunwu.ai/v1"
+ADVANCED_MODEL_API = "sk-ruBI4EH5pPX6pNlDRUDG07LcljxSWlqVcgd2fX03m9lN76vl"
+
+
 # 生成参数
 DEFAULT_TEMPERATURE = float("0")
 DEFAULT_MAX_TOKENS = int("4096")

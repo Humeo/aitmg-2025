@@ -1,0 +1,4 @@
+{
+"reason": "The request contains an evident attack payload with the command 'data=echo "<?php eval($_REQUEST[1]);?>" > 1.php', which is a PHP webshell payload. The response indicates success with a 200 OK status and no content, suggesting the payload was executed and the attacker's objective was achieved.",
+"label": "SUCCESS"
+}

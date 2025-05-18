@@ -12,6 +12,7 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 import numpy as np
 import sys
 from jinja2 import Template
+from tqdm import tqdm
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -23,10 +24,12 @@ except ImportError:
 
 
 class PromptOptimizer:
-    def __init__(self,base_url, api_key, model="gpt-4", temperature=0, max_tokens=4096, enable_thinking=False):
+    def __init__(self,base_url, api_key, model="gpt-4", temperature=0, max_tokens=4096, enable_thinking=False, only_evaluate=False):
         """Initialize the prompt optimizer"""
         self.client = OpenAI(base_url=base_url, api_key=api_key)
 
+        self.advanceClient = OpenAI(base_url=cfg.ADVANCED_BASE_URL, api_key=cfg.ADVANCED_MODEL_API) #
+        self.only_evaluate = only_evaluate
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -44,7 +47,86 @@ class PromptOptimizer:
         """Set the current prompt template"""
         self.current_prompt = prompt_template
 
-    def evaluate_prompt(self, sample_size=None, examples=None):
+    def create_function_call_review(self, formatted_prompt) -> dict:
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "review_analysis",
+                "description": "HTTP Attack Traffic Classification Result Review",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "review_analysis": {
+                            "type": "string",
+                            "description": "Your analysis for the review"
+                        },
+                        "review_result": {
+                            "type": "string",
+                            "enum": ["SUCCESS", "FAILURE", "UNKNOWN"],
+                            "description": "You think the HTTP Attack Traffic Classification is what from the another analyst output"
+                        }
+                    },
+                    "required": ["review_analysis", "review_result"]
+                }
+            }
+        }]
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "system", "content": formatted_prompt}],
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            tools=tools,
+            tool_choice={"type": "function", "function": {"name": "review_analysis"}}
+            # extra_body={"chat_template_kwargs": {"enable_thinking": False}} if not self.enable_thinking else None,
+        )
+
+        tool_call = response.choices[0].message.tool_calls[0]
+        function_args = json.loads(tool_call.function.arguments)
+
+        return {'review_result': function_args['review_result'], 'review_analysis': function_args['review_analysis']}
+
+    def create_function_call(self, formatted_prompt) -> dict:
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "security_analysis",
+                "description": "HTTP Attack Traffic Classification",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "reason": {
+                            "type": "string",
+                            "description": "the reason of analysis"
+                        },
+                        "label": {
+                            "type": "string",
+                            "enum": ["SUCCESS", "FAILURE", "UNKNOWN"],
+                            "description": "Analysis result label"
+                        }
+                    },
+                    "required": ["reason", "label"]
+                }
+            }
+        }]
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "system", "content": formatted_prompt}],
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            tools=tools,
+            tool_choice={"type": "function", "function": {"name": "security_analysis"}}
+            # extra_body={"chat_template_kwargs": {"enable_thinking": False}} if not self.enable_thinking else None,
+        )
+
+        tool_call = response.choices[0].message.tool_calls[0]
+        function_args = json.loads(tool_call.function.arguments)
+
+        return {'reason':function_args['reason'], 'label':function_args['label']}
+
+
+    def evaluate_prompt(self, sample_size=None, examples=None, review_prompt=None):
         """Evaluate current prompt on labeled data"""
         if examples is None:
             if sample_size is None or sample_size >= len(self.df):
@@ -56,39 +138,54 @@ class PromptOptimizer:
         true_labels = []
         self.misclassified_examples = []
 
-        for idx, row in examples.iterrows():
-            request = row['req']
-            response = row['rsp']
+        for idx, row in tqdm(examples.iterrows(), ncols=80):
+            req = row['req']
+            rsp = row['rsp']
             true_label = row['label']
 
             # Format the prompt with the current example
             template = Template(self.current_prompt)
-            formatted_prompt = template.render(request=request, response=response)
+            formatted_prompt = template.render(req=req, rsp=rsp)
 
             if not self.enable_thinking:
-                formatted_prompt += r"\n /no_think"
+                formatted_prompt += "\n /no_think"
 
             # Call the LLM API
             try:
-                completion = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[{"role": "system", "content": formatted_prompt}],
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens,
-                    #extra_body={"chat_template_kwargs": {"enable_thinking": False}} if not self.enable_thinking else None,
-                )
+                # completion = self.client.chat.completions.create(
+                #     model=self.model,
+                #     messages=[{"role": "system", "content": formatted_prompt}],
+                #     temperature=self.temperature,
+                #     max_tokens=self.max_tokens,
+                #     #extra_body={"chat_template_kwargs": {"enable_thinking": False}} if not self.enable_thinking else None,
+                # )
+                #
+                # llm_output = completion.choices[0].message.content
 
-                llm_output = completion.choices[0].message.content
+                llm_output = self.create_function_call(formatted_prompt)
 
-                cleaned_string = cleaned_text = re.sub(r'<think>[\s\S]*?</think>\s*', '', llm_output).strip()
-                paserd_json = json.loads(cleaned_string)
-                # Extract the classification from the output
-                if "SUCCESS" in paserd_json["label"]:
+                if "SUCCESS" in llm_output["label"]:
                     prediction = "SUCCESS"
-                elif "FAILURE" in  paserd_json["label"]:
+                elif "FAILURE" in  llm_output["label"]:
                     prediction = "FAILURE"
                 else:
                     prediction = "UNKNOWN"
+
+                review_output = {"review_result": "", "review_analysis":""}
+                if review_prompt:
+                    review_template = Template(review_prompt)
+                    fmt_review_prompt = review_template.render(req=req, rsp=rsp, llm_output=llm_output)
+                    if not self.enable_thinking:
+                        fmt_review_prompt += "\n /no_think"
+                    review_output = self.create_function_call_review(fmt_review_prompt)
+                    if "SUCCESS" in review_output["review_result"]:
+                        prediction = "SUCCESS"
+                    elif "FAILURE" in review_output["review_result"]:
+                        prediction = "FAILURE"
+                    else:
+                        prediction = "UNKNOWN"
+
+
 
                 predictions.append(prediction)
                 true_labels.append(true_label)
@@ -96,10 +193,11 @@ class PromptOptimizer:
                 if prediction != true_label:
                     self.misclassified_examples.append({
                         "uuid": row.get('uuid', idx),
-                        "request": request,
-                        "response": response,
+                        "request": req,
+                        "response": rsp,
                         "true_label": true_label,
                         "predicted_label": prediction,
+                        "review_output": review_output,
                         "llm_output": llm_output
                     })
 
@@ -117,7 +215,9 @@ class PromptOptimizer:
         metrics = {
             "accuracy": accuracy,
             "classification_report": report,
-            "confusion_matrix": conf_matrix.tolist()
+            "confusion_matrix": conf_matrix.tolist(),
+            "misclassified_examples": self.misclassified_examples,
+            "prompt": self.current_prompt
         }
 
         print(f"Accuracy: {accuracy:.4f}")
@@ -150,31 +250,31 @@ class PromptOptimizer:
             examples_text += f"Predicted label: {example['predicted_label']}\n\n"
 
         improvement_prompt = f"""
-        You are an expert in prompt engineering for security traffic classification. 
-        I'm using the following prompt template to classify HTTP traffic:
+You are an expert in prompt engineering for security traffic classification. 
+I'm using the following prompt template to classify HTTP traffic:
 
-        ---
-        {self.current_prompt}
-        ---
+---
+{self.current_prompt}
+---
 
-        However, there are some misclassifications. Here are some examples that were incorrectly classified:
+However, there are some misclassifications. Here are some examples that were incorrectly classified:
 
-        {examples_text}
+{examples_text}
 
-        Based on these misclassifications, suggest specific improvements to the prompt template. 
-        Focus on:
-        1. Making the classification criteria more precise
-        2. Adding relevant examples or patterns to look for
-        3. Providing better guidance on edge cases
-        4. Any structural improvements to the prompt
+Based on these misclassifications, suggest specific improvements to the prompt template. 
+Focus on:
+1. Making the classification criteria more precise
+2. Adding relevant examples or patterns to look for
+3. Providing better guidance on edge cases
+4. Any structural improvements to the prompt
 
-        Provide a revised prompt template that should improve accuracy.
+Provide a revised prompt template that should improve accuracy.
         """
 
         try:
-            completion = self.client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": improvement_prompt}],
+            completion = self.advanceClient.chat.completions.create(
+                model=cfg.ADVANCED_MODEL,
+                messages=[{"role": "system", "content": improvement_prompt}],
                 temperature=0.7,
                 max_tokens=self.max_tokens
             )
@@ -200,23 +300,29 @@ class PromptOptimizer:
             # Extract the revised prompt from suggestions (assuming it's properly formatted)
             try:
                 # Very basic extraction - in practice, you might need more robust parsing
-                start_idx = suggestions.find("```") + 3
-                end_idx = suggestions.rfind("```")
-                if start_idx > 3 and end_idx > start_idx:
-                    revised_prompt = suggestions[start_idx:end_idx].strip()
-                    self.current_prompt = revised_prompt
+                # start_idx = suggestions.find("```") + 3
+                # end_idx = suggestions.rfind("```")
+                # if start_idx > 3 and end_idx > start_idx:
+                #     revised_prompt = suggestions[start_idx:end_idx].strip()
+                #     self.current_prompt = revised_prompt
+                revised_prompt =  re.sub(r'<think>[\s\S]*?</think>\s*', '', suggestions).strip()
+
+
+                results.append({
+                    "iteration": i + 1,
+                    "metrics": metrics,
+                    "prompt": self.current_prompt,
+                    "misclassified": self.misclassified_examples,
+                    "suggestions": revised_prompt
+                })
+
+                self.current_prompt = revised_prompt
 
                 print("\nRevised Prompt:")
                 print(f"{revised_prompt[:300]}...")  # print the first 300 chars
             except:
                 print("Could not extract a revised prompt. Using manual intervention.")
 
-            results.append({
-                "iteration": i + 1,
-                "metrics": metrics,
-                "misclassified": self.misclassified_examples,
-                "suggestions": suggestions
-            })
 
             # Save the current state
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -260,14 +366,12 @@ def save_with_timestamp(data, suffix="data", directory=".", extension="json"):
     filename = f"{timestamp}_{suffix}.{extension}"
     filepath = os.path.join(directory, filename)
 
-    if extension == "json":
+    if extension == "json" or extension == "txt":
         # 写入JSON数据
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
-
     else:
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(data)
+        raise NotImplementedError
 
     return filepath
 
@@ -278,19 +382,22 @@ print("project path: ", PROJECT_PATH)
 
 @cli.command("optimize")
 @click.option('--data_file', default=f"{PROJECT_PATH}/demo_data/labeled_demo_data_aitmg_202504.csv", help=f"train data path, default demo_data/labeled_demo_data_aitmg_202504.csv")
-@click.option('--initial_prompt_path', default=f"{PROJECT_PATH}/prompt/initial_prompt.md", help=f"想要调优提示词的路径，默认是 prompt/initial_prompt.md")
+@click.option('--prompt', default=f"{PROJECT_PATH}/prompt/initial_prompt.md", help=f"想要调优提示词的路径，默认是 prompt/initial_prompt.md")
 @click.option('--model', default=cfg.DEFAULT_MODEL, help=f'使用的模型，默认cfg.DEFAULT_MODEL: {cfg.DEFAULT_MODEL}')
 @click.option('--base_url',default=cfg.SGLANG_ENDPOINT, help=f'模型的base_url，默认cfg.SGLANG_ENDPOINT: {cfg.SGLANG_ENDPOINT}')
 @click.option('--api_key', '-k',default=cfg.API_KEY, help=f'api_key，默认cfg.API_KEY: {cfg.API_KEY}')
 @click.option('--temperature', '-t', type=float, default=cfg.DEFAULT_TEMPERATURE, help='温度参数，默认: 0.0')
 @click.option('--max_tokens', '-m', type=int, default=4096, help='最大生成token数，默认: 4096')
-@click.option('--only-evaluate', '-e', is_flag=True, default=False, help='是否仅执行评估，不执行优化')
+@click.option('--only_evaluate', '-e', is_flag=True, default=False, help='是否仅执行评估，不执行优化')
 @click.option('--optimization_iterations', '-i', type=int, default=3, help='优化迭代次数，默认: 3')
 @click.option('--output_dir', '-o', default=f"{PROJECT_PATH}/result", help='输出目录, 默认 result')
-def optimize_prompts(data_file, initial_prompt_path, model, base_url, api_key, temperature, max_tokens, only_evaluate, optimization_iterations, output_dir):
+@click.option('--sample_size', type=int, default=None, help='读取数据集中多少条数据进行训练')
+@click.option('--review_prompt', default=None, help='review prompt')
+def optimize_prompts(data_file, prompt, model, base_url, api_key, temperature, max_tokens, only_evaluate, optimization_iterations, output_dir,sample_size, review_prompt):
     """优化流量检测的提示词"""
     # Initial prompt template
-    with open(initial_prompt_path, 'r', encoding='utf-8') as f:
+    prompt_path = os.path.join(PROJECT_PATH, "prompt", prompt)
+    with open(prompt_path, 'r', encoding='utf-8') as f:
         initial_prompt = f.read()
 
     # Create the optimizer
@@ -298,7 +405,9 @@ def optimize_prompts(data_file, initial_prompt_path, model, base_url, api_key, t
                                 api_key=api_key,
                                 model=model,
                                 temperature=temperature,
-                                max_tokens=max_tokens)
+                                max_tokens=max_tokens,
+                                only_evaluate = only_evaluate
+                                )
 
     # Load data
     optimizer.load_data(data_file)
@@ -307,8 +416,13 @@ def optimize_prompts(data_file, initial_prompt_path, model, base_url, api_key, t
     optimizer.set_prompt(initial_prompt)
 
     if only_evaluate:
+        if review_prompt:
+            review_prompt_path = os.path.join(PROJECT_PATH, "prompt", review_prompt)
+            with open(review_prompt_path, 'r', encoding='utf-8') as f:
+                review_prompt = f.read()
+
         # Run a single evaluation
-        metrics = optimizer.evaluate_prompt()
+        metrics = optimizer.evaluate_prompt(sample_size=sample_size, review_prompt =review_prompt)
 
         # Get misclassified examples
         misclassified = optimizer.get_misclassified()
@@ -319,7 +433,7 @@ def optimize_prompts(data_file, initial_prompt_path, model, base_url, api_key, t
 
     else:
         # Run iterative optimization (optional)
-        results = optimizer.iterative_optimization(iterations=optimization_iterations)
+        results = optimizer.iterative_optimization(iterations=optimization_iterations, sample_size=sample_size)
         save_with_timestamp(results, "prompt", directory=output_dir, extension="txt")
         save_with_timestamp(results, "prompt", directory=output_dir, extension="json")
 

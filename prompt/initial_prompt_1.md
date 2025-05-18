@@ -47,3 +47,10 @@ Analyze the `req` for evident attack payloads (e.g., SQLi, XSS, Command Injectio
 For each `req` and `rsp` pair you process, output the reasons for your classification and the corresponding classification:
 "reason":why are you thinking this `req` and `rsp` pair is `SUCCESS`,`FAILURE` or `UNKNOWN`"
 "label": `FAILURE` or `UNKNOWN`"  this  `SUCCESS`
+
+Analyze the following HTTP traffic exchange:
+req:
+{{req}}
+
+rsp:
+{{rsp}}
