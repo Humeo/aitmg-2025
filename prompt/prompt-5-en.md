@@ -1,54 +1,3 @@
----
-
-Absolutely! These misclassification examples reveal **two key weaknesses** in the current prompt:
-
-1. **Distinguishing “blind/indirect” attacks from genuine failures:**  
-   The prompt currently treats any non-error, non-leak, non-confirmation (like a generic 200 OK with a short string) as FAILURE, even in cases where the attack is “blind” and the response doesn’t give any confirmation either way.
-2. **Missing guidance on “indirect command execution” or “out-of-band” cases:**  
-   Some payloads (reverse shell, connect-back, etc.) are intended not to return output in the HTTP response. The prompt should instruct to recognize these and classify as UNKNOWN unless the response shows direct evidence of execution or failure.
-
-Additionally, the template needs:
-- More **positive patterns for SUCCESS** (e.g., command output, file content, OS/network info).
-- More **negative patterns for FAILURE** (e.g., explicit error, “not found”, “forbidden”, etc.).
-- Explicit instructions for **blind attacks** or **out-of-band** payloads.
-- More focus on **response body content** (not just status code).
-
----
-
-## **Specific Suggestions for Improvement**
-
-### 1. **Clarify “Blind” and Out-of-band Attacks**
-
-Add a checklist:  
-If the payload is for a command or reverse shell and the response is a generic “start”/“ok”/empty, and **no output, error, or leak appears**, label as **UNKNOWN** (not FAILURE).
-
-### 2. **Enhance SUCCESS Guidance**
-
-Give examples:  
-If the response contains evidence of payload effect (e.g., command output, file content, system/network info), label as SUCCESS.
-
-### 3. **Expand FAILURE Guidance**
-
-Add that generic 200 OK with known block/placeholder text (e.g., “start”, “processing”, “no data”, etc.) **without further evidence** is typically FAILURE **except** for blind attacks.
-
-### 4. **Add Patterns and Examples**
-
-- For “start</br>” or similar placeholders after reverse shell:  
-  → UNKNOWN  
-- For command output (IP configuration, file listing):  
-  → SUCCESS  
-- For generic error JSON with no relation to payload (API error):  
-  → UNKNOWN if unrelated, unless clear evidence of block.
-
-### 5. **Structural Improvement: Add Classification Checklist**
-
-Before issuing the label, the LLM should “tick off” which criteria are satisfied.
-
----
-
-# **REVISED PROMPT TEMPLATE**
-
----
 
 **Prompt for LLM: HTTP Attack Traffic Classification (Enhanced & Precise)**
 
@@ -129,44 +78,13 @@ You are a specialized security traffic analyzer AI. Your job:
 
 ---
 
-## **Concrete Example Patterns**
-
-**Example A (Blind reverse shell, generic response):**  
-Request: POST ...abc=nc+-e+/bin/dash+...  
-Response: 200 OK  
-Body: start</br>  
-→ **label: UNKNOWN**  
-Reason: Blind payload (reverse shell); response contains only generic placeholder; cannot confirm execution.
-
-**Example B (Direct command, real output):**  
-Request: GET ...?&C://Windows/System32/ipconfig  
-Response: 200 OK  
-Body: Windows IP 配置 ...  
-→ **label: SUCCESS**  
-Reason: Command output (IP config) returned; evidence of successful execution.
-
-**Example C (Command injection, generic error):**  
-Request: ...abc=awk ...  
-Response: 500 Internal Server Error  
-Body: {"error": ... "bad argument for advertisement"...}  
-→ **label: UNKNOWN**  
-Reason: Error unrelated to payload; cannot confirm execution or block.
-
-**Example D (Direct command, empty response):**  
-Request: ...abc=cat+/etc/passwd  
-Response: 200 OK  
-Body:  
-→ **label: FAILURE**  
-Reason: Direct-output attack; empty response where output expected.
-
----
 
 ## **Output Format**
 
-- `"reason": "<cite criteria and checklist: e.g., 'Blind reverse shell payload; response is generic placeholder, cannot confirm execution.'>"`
-- `"label": "<SUCCESS | FAILURE | UNKNOWN>"`
+please warp the analysis reason and result with <reason> and <label>, for example:
+<reason>cite criteria and checklist: e.g., 'Blind reverse shell payload; response is generic placeholder, cannot confirm execution.'</reason>
+<label>SUCCESS | FAILURE | UNKNOWN</label>
 
----
 
 ### **Analyze the following HTTP traffic exchange:**
 req:  
@@ -185,9 +103,3 @@ rsp:
 - More patterns/examples for command output, generic placeholders, API errors.
 - Checklist structure to guide LLM.
 - More guidance for direct-output vs. blind attacks.
-
----
-
-**This revision should directly resolve the misclassifications and provide more robust, precise guidance for both the LLM and for future prompt engineering.**
-
----

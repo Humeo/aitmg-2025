@@ -22,3 +22,5 @@ case "$1" in
     echo "not support model: $2"
   ;;
 esac
+
+optimize --prompt="prompt-5-en.md" -e --api_key="sk-wMRk3xvAGOkLhZ7WQhezrv9JYyukspkMjRLFWpLzDwxfiAhF" --base_url="https://yunwu.ai/v1" --model="gemini-2.5-flash-preview-05-20"

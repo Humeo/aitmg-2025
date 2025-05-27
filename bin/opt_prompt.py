@@ -1,19 +1,23 @@
+import math
 import re
 from datetime import datetime
 from email.policy import default
-from openai import OpenAI
+
+import requests
+from sympy import false
+
+import utils
 import click
 import pandas as pd
 import json
 import os
-import openai
 import time
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 import numpy as np
 import sys
 from jinja2 import Template
 from tqdm import tqdm
-
+from openai import OpenAI
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
@@ -24,10 +28,11 @@ except ImportError:
 
 
 class PromptOptimizer:
-    def __init__(self,base_url, api_key, model="gpt-4", temperature=0, max_tokens=4096, enable_thinking=False, only_evaluate=False):
+    def __init__(self,base_url, api_key, model="gpt-4", temperature=0, max_tokens=4096, batch_size=None, enable_thinking=False, only_evaluate=False):
         """Initialize the prompt optimizer"""
         self.client = OpenAI(base_url=base_url, api_key=api_key)
-
+        self.base_url = base_url
+        self.api_key = api_key
         self.advanceClient = OpenAI(base_url=cfg.ADVANCED_BASE_URL, api_key=cfg.ADVANCED_MODEL_API) #
         self.only_evaluate = only_evaluate
         self.model = model
@@ -36,6 +41,7 @@ class PromptOptimizer:
         self.misclassified_examples = []
         self.current_prompt = ""
         self.enable_thinking = enable_thinking
+        self.batch_size = batch_size
 
     def load_data(self, csv_path):
         """Load and parse the CSV data"""
@@ -86,6 +92,36 @@ class PromptOptimizer:
 
         return {'review_result': function_args['review_result'], 'review_analysis': function_args['review_analysis']}
 
+    def create_chat_response(self, formatted_prompt):
+        payload = json.dumps({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": formatted_prompt
+                }
+            ],
+            "model": self.model,
+            "temperature": 0,
+        })
+        headers = {
+            'Accept': 'application/json',
+            'Authorization': f'Bearer {self.api_key}',
+            'Content-Type': 'application/json'
+        }
+        url = "https://yunwu.ai/v1/chat/completions"
+        retries = 1
+        while True:
+            response = requests.request("POST", url, headers=headers, data=payload)
+            if response.status_code != 200:
+                print(f"Got an error: {response.status_code}, starting {retries} retry...")
+                retries += 1
+                time.sleep(1)
+            else:
+                break
+        text = response.json()['choices'][0]['message']['content']
+
+        return text
+
     def create_function_call(self, formatted_prompt) -> dict:
         tools = [{
             "type": "function",
@@ -112,7 +148,7 @@ class PromptOptimizer:
 
         response = self.client.chat.completions.create(
             model=self.model,
-            messages=[{"role": "system", "content": formatted_prompt}],
+            messages=[{"role": "user", "content": formatted_prompt}],
             temperature=self.temperature,
             max_tokens=self.max_tokens,
             tools=tools,
@@ -126,7 +162,7 @@ class PromptOptimizer:
         return {'reason':function_args['reason'], 'label':function_args['label']}
 
 
-    def evaluate_prompt(self, sample_size=None, examples=None, review_prompt=None):
+    def evaluate_prompt(self, save_file, sample_size=None, examples=None, review_prompt=None, unlabeled_data=False):
         """Evaluate current prompt on labeled data"""
         if examples is None:
             if sample_size is None or sample_size >= len(self.df):
@@ -138,74 +174,105 @@ class PromptOptimizer:
         true_labels = []
         self.misclassified_examples = []
 
-        for idx, row in tqdm(examples.iterrows(), ncols=80):
-            req = row['req']
-            rsp = row['rsp']
-            true_label = row['label']
+        df = self.df.sample(n=8000)
+        num_rows = len(df)
+        if self.batch_size:
+            num_batches = math.ceil(num_rows / self.batch_size)
 
-            # Format the prompt with the current example
-            template = Template(self.current_prompt)
-            formatted_prompt = template.render(req=req, rsp=rsp)
+        with open(save_file + ".jsonl", 'w', encoding='utf-8') as f_out:
+            for i in tqdm(range(0, num_rows, self.batch_size), ncols=80):
+                start_idx = i
+                end_idx = min(i + self.batch_size, num_rows)  # 确保不会超出 DataFrame 边界
 
-            if not self.enable_thinking:
-                formatted_prompt += "\n /no_think"
+                # 获取当前批次的数据
+                batch_df = df.iloc[start_idx:end_idx]
 
-            # Call the LLM API
-            try:
-                # completion = self.client.chat.completions.create(
-                #     model=self.model,
-                #     messages=[{"role": "system", "content": formatted_prompt}],
-                #     temperature=self.temperature,
-                #     max_tokens=self.max_tokens,
-                #     #extra_body={"chat_template_kwargs": {"enable_thinking": False}} if not self.enable_thinking else None,
-                # )
-                #
-                # llm_output = completion.choices[0].message.content
+                batch_json = batch_df.to_json(orient="records")
+                # Format the prompt with the current example
+                template = Template(self.current_prompt)
+                formatted_prompt = template.render(traffic_exchanges_list_json=batch_json)
 
-                llm_output = self.create_function_call(formatted_prompt)
+                # if not self.enable_thinking:
+                #     formatted_prompt += "\n /no_think"
 
-                if "SUCCESS" in llm_output["label"]:
-                    prediction = "SUCCESS"
-                elif "FAILURE" in  llm_output["label"]:
-                    prediction = "FAILURE"
-                else:
-                    prediction = "UNKNOWN"
+                # Call the LLM API
+                try:
+                    # completion = self.client.chat.completions.create(
+                    #     model=self.model,
+                    #     messages=[{"role": "system", "content": formatted_prompt}],
+                    #     temperature=self.temperature,
+                    #     max_tokens=self.max_tokens,
+                    #     #extra_body={"chat_template_kwargs": {"enable_thinking": False}} if not self.enable_thinking else None,
+                    # )
+                    #
+                    # llm_output = completion.choices[0].message.content
 
-                review_output = {"review_result": "", "review_analysis":""}
-                if review_prompt:
-                    review_template = Template(review_prompt)
-                    fmt_review_prompt = review_template.render(req=req, rsp=rsp, llm_output=llm_output)
-                    if not self.enable_thinking:
-                        fmt_review_prompt += "\n /no_think"
-                    review_output = self.create_function_call_review(fmt_review_prompt)
-                    if "SUCCESS" in review_output["review_result"]:
-                        prediction = "SUCCESS"
-                    elif "FAILURE" in review_output["review_result"]:
-                        prediction = "FAILURE"
+                    llm_output = self.create_chat_response(formatted_prompt)
+                    json_content_string = llm_output.replace('```json', '', 1).replace('```', '', 1).strip()
+                    data_list = json.loads(json_content_string)
+                    if unlabeled_data:
+                        for record in data_list:
+                            json.dump(record, f_out, ensure_ascii=False)  # ensure_ascii=False for non-ASCII chars
+                            f_out.write('\n')
+                            f_out.flush()
                     else:
-                        prediction = "UNKNOWN"
+                        for record in data_list:
+                            json.dump(record, f_out, ensure_ascii=False)  # ensure_ascii=False for non-ASCII chars
+                            f_out.write('\n')
+                            f_out.flush()
+
+                            if "SUCCESS" in record["label"]:
+                                prediction = "SUCCESS"
+                            elif "FAILURE" in record["label"]:
+                                prediction = "FAILURE"
+                            else:
+                                prediction = "UNKNOWN"
+
+                            row = batch_df[batch_df['uuid'] == record["uuid"]]
+                            if row.empty:
+                                print(f"Warning: UUID {record['uuid']} from LLM not found in original batch_df.")
+                                continue
+                            true_label = str(row['label'].iloc[0])
+                            true_labels.append(true_label)
+                            predictions.append(prediction)
+                            if prediction != true_label:
+                                mis_json = {
+                                    "uuid": record.get('uuid'),
+                                    "row": row.to_dict(orient='records'),
+                                    "true_label": true_label,
+                                    "predicted_label": prediction,
+                                    "llm_output": record
+                                }
+                                json.dump(mis_json, f_out, ensure_ascii=False)
+                                f_out.write('\n')
+                                f_out.flush()
 
 
 
-                predictions.append(prediction)
-                true_labels.append(true_label)
+                    # review_output = {"label": "", "reason":""}
+                    # if review_prompt:
+                    #     review_template = Template(review_prompt)
+                    #     fmt_review_prompt = review_template.render(req=req, rsp=rsp, llm_output=llm_output)
+                    #     # if not self.enable_thinking:
+                    #     #     fmt_review_prompt += "\n /no_think"
+                    #     review_output = self.create_function_call_review(fmt_review_prompt)
+                    #     if "SUCCESS" in review_output["review_result"]:
+                    #         prediction = "SUCCESS"
+                    #     elif "FAILURE" in review_output["review_result"]:
+                    #         prediction = "FAILURE"
+                    #     else:
+                    #         prediction = "UNKNOWN"
 
-                if prediction != true_label:
-                    self.misclassified_examples.append({
-                        "uuid": row.get('uuid', idx),
-                        "request": req,
-                        "response": rsp,
-                        "true_label": true_label,
-                        "predicted_label": prediction,
-                        "review_output": review_output,
-                        "llm_output": llm_output
-                    })
 
-                # To avoid rate limiting
-                time.sleep(0.5)
 
-            except Exception as e:
-                print(f"Error processing example {idx}: {e}")
+                    #
+
+
+                    # To avoid rate limiting
+                    time.sleep(0.5)
+
+                except Exception as e:
+                    print(f"Error processing example {i}: {e}")
 
         # Calculate metrics
         accuracy = accuracy_score(true_labels, predictions)
@@ -393,7 +460,9 @@ print("project path: ", PROJECT_PATH)
 @click.option('--output_dir', '-o', default=f"{PROJECT_PATH}/result", help='输出目录, 默认 result')
 @click.option('--sample_size', type=int, default=None, help='读取数据集中多少条数据进行训练')
 @click.option('--review_prompt', default=None, help='review prompt')
-def optimize_prompts(data_file, prompt, model, base_url, api_key, temperature, max_tokens, only_evaluate, optimization_iterations, output_dir,sample_size, review_prompt):
+@click.option('--batch_size', default=1, help='模型一次处理的批大小')
+@click.option('--unlabeled_data', is_flag=True, default=False, help='是否仅执行评估，不执行优化')
+def optimize_prompts(data_file, prompt, model, base_url, api_key, temperature, max_tokens, only_evaluate, optimization_iterations, output_dir,sample_size, review_prompt, batch_size, unlabeled_data):
     """优化流量检测的提示词"""
     # Initial prompt template
     prompt_path = os.path.join(PROJECT_PATH, "prompt", prompt)
@@ -406,9 +475,11 @@ def optimize_prompts(data_file, prompt, model, base_url, api_key, temperature, m
                                 model=model,
                                 temperature=temperature,
                                 max_tokens=max_tokens,
-                                only_evaluate = only_evaluate
+                                only_evaluate = only_evaluate,
+                                batch_size=batch_size
                                 )
-
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    filePathNoExtension = os.path.join(output_dir, timestamp)
     # Load data
     optimizer.load_data(data_file)
 
@@ -421,8 +492,9 @@ def optimize_prompts(data_file, prompt, model, base_url, api_key, temperature, m
             with open(review_prompt_path, 'r', encoding='utf-8') as f:
                 review_prompt = f.read()
 
+
         # Run a single evaluation
-        metrics = optimizer.evaluate_prompt(sample_size=sample_size, review_prompt =review_prompt)
+        metrics = optimizer.evaluate_prompt(filePathNoExtension, sample_size=sample_size, review_prompt =review_prompt, unlabeled_data=unlabeled_data)
 
         # Get misclassified examples
         misclassified = optimizer.get_misclassified()

@@ -77,7 +77,7 @@ Please strictly follow the review process below:
 ### **Output Format**
 
 ```json
-{
+<>
   "review_result": "SUCCESS or FAILURE or UNKNOWN",
   "review_analysis": "Your analysis for the review"
 }
